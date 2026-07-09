@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <VitureSdkRoot Condition="'$(VITURE_SDK_ROOT)' != ''">$(VITURE_SDK_ROOT)</VitureSdkRoot>
+    <VitureSdkRoot Condition="'$(VitureSdkRoot)' == ''">C:\Users\jmben\Downloads\VITURE_XR_Glasses_SDK_for_Windows_x86_64</VitureSdkRoot>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="NAudio" Version="2.2.1" />
+    <PackageReference Include="OpenCvSharp4" Version="4.10.0.20240616" />
+    <PackageReference Include="OpenCvSharp4.runtime.win" Version="4.10.0.20240616" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="$(VitureSdkRoot)\x86_64\glasses.dll" CopyToOutputDirectory="PreserveNewest" Link="glasses.dll" />
+    <None Include="$(VitureSdkRoot)\x86_64\libusb-1.0.dll" CopyToOutputDirectory="PreserveNewest" Link="libusb-1.0.dll" />
+    <None Include="$(VitureSdkRoot)\x86_64\opencv_world4100.dll" CopyToOutputDirectory="PreserveNewest" Link="opencv_world4100.dll" />
+    <None Include="$(VitureSdkRoot)\x86_64\carina_vio.dll" CopyToOutputDirectory="PreserveNewest" Link="carina_vio.dll" />
+    <None Include="$(VitureSdkRoot)\x86_64\glew32.dll" CopyToOutputDirectory="PreserveNewest" Link="glew32.dll" />
+  </ItemGroup>
+
+</Project>

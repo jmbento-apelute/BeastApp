@@ -1,0 +1,7 @@
+bin/
+obj/
+captures/
+*.user
+*.suo
+*.rsuser
+.vs/
