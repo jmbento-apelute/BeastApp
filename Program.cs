@@ -81,57 +81,11 @@ while (true)
     var key = ReadCommandKey();
     Console.WriteLine(key);
 
-    if (key == ConsoleKey.Q)
+    var shouldContinue = await ExecuteCommandKeyAsync(key, "keyboard");
+    if (!shouldContinue)
     {
-        await liveStreamingServer.StopAsync();
         break;
     }
-
-    if (key == ConsoleKey.S)
-    {
-        if (liveStreamingServer.IsRunning)
-        {
-            Console.WriteLine("Stop live stream with L before switching source.");
-            continue;
-        }
-
-        IImageCaptureSource selectedSource;
-        lock (sourceGate)
-        {
-            activeSource = ReferenceEquals(activeSource, vitureSource) ? webcamSource : vitureSource;
-            selectedSource = activeSource;
-            Console.WriteLine($"Active source: {selectedSource.Name}");
-        }
-
-        StartSourceWarmup(selectedSource);
-
-        continue;
-    }
-
-    if (key == ConsoleKey.L)
-    {
-        await ToggleLiveStreamAsync();
-        continue;
-    }
-
-    if (key == ConsoleKey.E)
-    {
-        RotateLiveEffect();
-        continue;
-    }
-
-    if (key == ConsoleKey.V)
-    {
-        await RunVideoCaptureWorkflowAsync();
-        continue;
-    }
-
-    if (key != ConsoleKey.C)
-    {
-        continue;
-    }
-
-    await RunCaptureWorkflowAsync("keyboard");
 }
 
 void StartSourceWarmup(IImageCaptureSource source)
@@ -235,7 +189,11 @@ async Task ToggleLiveStreamAsync()
             requestedSource = activeSource;
         }
 
-        liveStreamingServer.Start(requestedSource, GetActiveLiveEffect);
+        liveStreamingServer.Start(
+            requestedSource,
+            GetActiveLiveEffect,
+            RunGestureCaptureWorkflowAsync,
+            key => ExecuteCommandKeyAsync(key, "browser"));
         audioPlayback.PlayRecordingStartedCue();
         Console.WriteLine($"Live stream started from {requestedSource.Name}: {liveStreamingServer.Url}");
         Console.WriteLine($"Live effect: {LiveVideoEffects.GetDisplayName(GetActiveLiveEffect())}");
@@ -253,6 +211,67 @@ async Task ToggleLiveStreamAsync()
     {
         captureGate.Release();
     }
+}
+
+async Task<bool> ExecuteCommandKeyAsync(ConsoleKey key, string trigger)
+{
+    if (key == ConsoleKey.Q)
+    {
+        Console.WriteLine(trigger == "browser" ? "Browser command: Q. Quitting..." : "Quitting...");
+        await liveStreamingServer.StopAsync();
+        if (trigger == "browser")
+        {
+            Environment.Exit(0);
+        }
+
+        return false;
+    }
+
+    if (key == ConsoleKey.S)
+    {
+        if (liveStreamingServer.IsRunning)
+        {
+            Console.WriteLine("Stop live stream with L before switching source.");
+            return true;
+        }
+
+        IImageCaptureSource selectedSource;
+        lock (sourceGate)
+        {
+            activeSource = ReferenceEquals(activeSource, vitureSource) ? webcamSource : vitureSource;
+            selectedSource = activeSource;
+            Console.WriteLine($"Active source: {selectedSource.Name}");
+        }
+
+        StartSourceWarmup(selectedSource);
+        return true;
+    }
+
+    if (key == ConsoleKey.L)
+    {
+        await ToggleLiveStreamAsync();
+        return true;
+    }
+
+    if (key == ConsoleKey.E)
+    {
+        RotateLiveEffect();
+        return true;
+    }
+
+    if (key == ConsoleKey.V)
+    {
+        await RunVideoCaptureWorkflowAsync();
+        return true;
+    }
+
+    if (key == ConsoleKey.C)
+    {
+        await RunCaptureWorkflowAsync(trigger);
+        return true;
+    }
+
+    return true;
 }
 
 void RotateLiveEffect()
@@ -329,6 +348,67 @@ async Task RunCaptureWorkflowAsync(string trigger)
             SuppressVoiceInput(TimeSpan.FromSeconds(30));
             var speechAudio = await speechSynthesizer.CreateSpeechAsync(description, CancellationToken.None);
             var speechOutput = AudioOutputSelector.SelectDevice(requestedSource.Name, settings);
+            audioPlayback.PlayMp3(speechAudio, speechOutput);
+        }
+        finally
+        {
+            SuppressVoiceInput(TimeSpan.FromSeconds(1));
+        }
+    }
+    catch (Exception ex)
+    {
+        Console.ForegroundColor = ConsoleColor.Red;
+        Console.WriteLine($"Error: {ex.Message}");
+        Console.ResetColor();
+    }
+    finally
+    {
+        captureGate.Release();
+    }
+}
+
+async Task RunGestureCaptureWorkflowAsync(byte[] jpegBytes, string sourceName)
+{
+    if (!await captureGate.WaitAsync(0))
+    {
+        Console.WriteLine("Gesture capture ignored: another interaction is already in progress.");
+        return;
+    }
+
+    try
+    {
+        ILiveFrameSource requestedSource;
+        lock (sourceGate)
+        {
+            requestedSource = activeSource;
+        }
+
+        var image = new CapturedImage(requestedSource, jpegBytes);
+        Console.WriteLine($"Gesture detected. Capturing live frame from {sourceName}...");
+        audioPlayback.PlayCaptureCompleteCue();
+        SaveCaptureIfEnabled(image);
+
+        Console.WriteLine($"Analyzing scene from {image.Source.Name}...");
+        var description = await sceneAnalyzer.DescribeSceneAsync(image.JpegBytes, CancellationToken.None);
+        lock (sceneContextGate)
+        {
+            lastSceneContext = new SceneContext(
+                image.Source.Name,
+                description,
+                image.JpegBytes,
+                DateTimeOffset.Now);
+        }
+
+        Console.WriteLine();
+        Console.WriteLine(description);
+        Console.WriteLine();
+
+        Console.WriteLine("Generating speech...");
+        try
+        {
+            SuppressVoiceInput(TimeSpan.FromSeconds(30));
+            var speechAudio = await speechSynthesizer.CreateSpeechAsync(description, CancellationToken.None);
+            var speechOutput = AudioOutputSelector.SelectDevice(image.Source.Name, settings);
             audioPlayback.PlayMp3(speechAudio, speechOutput);
         }
         finally
