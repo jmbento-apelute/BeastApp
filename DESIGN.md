@@ -2,7 +2,7 @@
 
 ## 1. Overview
 
-BeastApp is a Windows console prototype for a smart-glasses assistant. It captures images from Viture Beast glasses or a fallback webcam, sends images to OpenAI for scene understanding, speaks Spanish responses aloud, accepts follow-up voice questions about the latest captured scene, records short video clips, and can serve a local live video stream for browser viewing.
+BeastApp is a Windows console prototype for a smart-glasses assistant. It captures images from Viture Beast glasses or a fallback webcam, sends images to OpenAI for scene understanding, speaks Spanish responses aloud, accepts follow-up voice questions about the latest captured scene, records short video clips, and can serve a local live video stream for browser viewing and gesture interaction.
 
 The app is local-first for device access:
 
@@ -11,6 +11,7 @@ The app is local-first for device access:
 - Captured images are kept in memory by default and are not written to disk unless explicitly enabled.
 - Video clips are written only when the user presses `V`.
 - Live streaming is served locally by default and does not persist frames to disk.
+- Browser gestures and browser key commands are sent to the local BeastApp server.
 
 ## 2. Goals
 
@@ -22,6 +23,7 @@ The app is local-first for device access:
 - Route audio output to Viture speakers when available.
 - Record short temporary video clips from the active camera source.
 - Serve a local MJPEG live stream from the active camera source for quick browser testing.
+- Let Chrome act as a live client for effects, keyboard commands, and pinch gesture capture.
 - Avoid storing private image data locally unless diagnostic capture saving is explicitly enabled.
 
 ## 3. Non-Goals
@@ -33,6 +35,7 @@ The app is local-first for device access:
 - It does not persist conversation history or image history across app restarts.
 - It does not implement fully streaming speech-to-speech interaction.
 - It does not implement WebRTC yet; live video currently uses local HTTP MJPEG streaming.
+- It does not perform gesture detection in C# yet; the first gesture implementation runs in Chrome.
 
 ## 4. Runtime Architecture
 
@@ -43,6 +46,7 @@ The application is split into focused source files:
 - `Models.cs`: Shared records and interfaces.
 - `CaptureSources.cs`: Webcam and Viture image, video, and live frame capture implementations.
 - `LiveStreamingServer.cs`: Local HTTP MJPEG live streaming server.
+- `LiveVideoEffects.cs`: OpenCV-based live video effects.
 - `OpenAiServices.cs`: OpenAI vision, question answering, speech synthesis, and transcription clients.
 - `VoiceCommands.cs`: Microphone selection, audio recording, command transcription, and command matching.
 - `AudioServices.cs`: Audio output selection, MP3 playback, and local cue sounds.
@@ -116,6 +120,25 @@ LiveStreamingServer
    +--> GET /              browser page
    +--> GET /stream.mjpeg  MJPEG live stream
    +--> GET /snapshot.jpg  single JPEG frame
+   +--> GET /effect.json   current live effect
+   +--> POST /gesture/capture
+   +--> POST /command/key
+```
+
+Browser gesture flow:
+
+```text
+Chrome live page
+   |
+   +--> MediaPipe Hands detects thumb/index pinch
+   |
+   +--> local click sound in Chrome
+   |
+   +--> POST /gesture/capture
+   |
+   +--> BeastApp analyzes latest raw live frame
+   |
+   +--> OpenAI TTS response
 ```
 
 ## 5. Capture Sources
@@ -193,10 +216,56 @@ Endpoints:
 | `/` | Minimal browser page with the live view |
 | `/stream.mjpeg` | Multipart MJPEG stream |
 | `/snapshot.jpg` | One JPEG frame |
+| `/effect.json` | Current live effect name |
+| `/gesture/capture` | Trigger capture from latest live frame |
+| `/command/key` | Execute a registered app key from Chrome |
 
 Live streaming is intended as a quick local test path before adding a more complex WebRTC implementation. It uses Chrome or another browser as the client and does not write frames to disk.
 
 Only one live stream client is allowed at a time. While live streaming is active, the app blocks source switching, image capture, and video recording so the camera is not opened by two workflows at once.
+
+### Live Effects
+
+Pressing `E` cycles the active live effect. Effects are applied only to frames sent to the browser; image capture, video recording, and OpenAI analysis use the raw camera frame.
+
+Current effects:
+
+- Normal
+- Blanco y negro
+- Baja luz
+- Vision nocturna
+- Termico
+- Bordes
+- Bordes superpuestos
+- Movimiento
+
+### Browser Commands
+
+The Chrome live page forwards registered key commands to BeastApp:
+
+| Key | Behavior |
+| --- | --- |
+| `E` | Change live effect |
+| `L` | Start/stop live stream |
+| `C` | Capture the latest raw live frame |
+| `V` | Attempt video recording |
+| `S` | Attempt source switch |
+| `Q` | Stop the app |
+| `G` | Toggle browser gesture detection only |
+
+`C` from Chrome is special: while live is active it captures the latest raw live frame instead of reopening the camera.
+
+### Gesture Capture
+
+The Chrome live page can load MediaPipe Hands from a CDN and detect a pinch gesture between thumb and index finger. The gesture is used as a hands-free capture trigger.
+
+Behavior:
+
+- Press `G` in Chrome to enable or disable gestures.
+- Pinch thumb and index finger to play a local click sound.
+- The page sends `POST /gesture/capture` to BeastApp.
+- BeastApp analyzes the latest raw live frame and speaks the result.
+- The prompt tells the LLM to ignore the pinch hand gesture unless the user explicitly asks about it.
 
 ## 8. Voice Interaction
 
@@ -243,6 +312,7 @@ OpenAI calls are isolated in `OpenAiServices.cs`.
 The prompt avoids unnecessary safety warnings:
 
 - Describe main objects and relevant context.
+- Ignore a hand making a thumb/index pinch gesture when it is only the capture trigger.
 - Do not warn about ordinary clutter, cables, furniture, or everyday objects.
 - Warn only for clear and immediate danger.
 
@@ -337,6 +407,8 @@ Live streaming:
 
 - The default server URL is local-only.
 - Exposing the stream to the LAN should require an explicit URL change and should be protected before broader use.
+- Gesture capture uses the latest raw live frame kept in process memory; it does not save the frame unless `SAVE_CAPTURES=true`.
+- The Chrome gesture prototype loads MediaPipe Hands from `cdn.jsdelivr.net`.
 
 The repository ignores:
 
@@ -403,6 +475,8 @@ The app should not ship with a developer-owned API key.
 
 The live streaming server exposes camera frames. It is intentionally local-only by default. If the URL is changed to listen on a LAN address, the app should add authentication or another explicit access control before being used outside a trusted local test environment.
 
+Browser commands are also local-only by default. If the server is exposed beyond localhost, command endpoints such as `/command/key` and `/gesture/capture` must be protected because they can trigger capture, speech, live stop/start, and app shutdown.
+
 ## 16. Error Handling
 
 The app favors graceful fallback:
@@ -414,6 +488,8 @@ The app favors graceful fallback:
 - If voice listener errors, it reports the error and retries after a delay.
 - If OpenAI key is missing, capture can still be tested but OpenAI operations fail with explicit messages.
 - If live streaming is active, conflicting camera workflows are rejected until the user stops live mode with `L`.
+- If gesture capture fires while another interaction is running, the gesture capture is ignored.
+- If Chrome sends `C` during live mode, BeastApp captures the latest live frame instead of reopening the active camera.
 
 ## 17. Known Limitations
 
@@ -424,6 +500,8 @@ The app favors graceful fallback:
 - Questions use only the most recent captured image, not a history.
 - Live streaming uses MJPEG over HTTP rather than WebRTC.
 - Live streaming is local-first and currently supports one stream client at a time.
+- Gesture detection currently runs in Chrome and requires network access to load MediaPipe from CDN.
+- Browser command endpoints are intended for local trusted use only.
 - There is no packaging or installer flow yet.
 - There are no automated unit tests yet.
 
@@ -436,6 +514,8 @@ Potential next steps:
 - Add a Realtime API mode for lower-latency voice interaction.
 - Add WebRTC live streaming for lower latency, audio support, and remote browser clients.
 - Add authentication for non-local live streaming.
+- Bundle MediaPipe assets locally or move gesture detection into the app for offline operation.
+- Add more gesture commands, such as double pinch, pinch hold, swipe, and open palm cancel.
 - Add structured logging with privacy-safe redaction.
 - Add tests for command matching, settings parsing, and prompt routing.
 - Add a packaged release process.
@@ -463,8 +543,17 @@ Primary controls:
 C = capture image
 V = record video clip
 L = start/stop local live stream
+E = change live effect
 S = switch source
 Q = quit
+```
+
+Chrome live page controls:
+
+```text
+G = enable/disable browser gesture detection
+Pinch thumb + index = capture latest live frame
+E/L/C/V/S/Q = send registered command to BeastApp
 ```
 
 Voice command:
