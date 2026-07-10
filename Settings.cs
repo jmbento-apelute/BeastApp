@@ -19,6 +19,10 @@ internal sealed record AppSettings(
     bool VoiceCommandDebug,
     bool SaveCaptures,
     string CaptureSaveDirectory,
+    TimeSpan VideoCaptureDuration,
+    string VideoCaptureDirectory,
+    string LiveStreamUrl,
+    double LiveStreamFramesPerSecond,
     TimeSpan CaptureTimeout)
 {
     public static AppSettings Load(string[] args)
@@ -54,6 +58,11 @@ internal sealed record AppSettings(
             GetBool("VOICE_COMMAND_DEBUG", false),
             GetBool("SAVE_CAPTURES", false),
             Environment.GetEnvironmentVariable("CAPTURE_SAVE_DIR") ?? Path.Combine(AppContext.BaseDirectory, "captures"),
+            TimeSpan.FromSeconds(GetDouble("VIDEO_CAPTURE_SECONDS", 5.0, 1.0, 60.0)),
+            Environment.GetEnvironmentVariable("VIDEO_CAPTURE_DIR")
+                ?? Path.Combine(Path.GetTempPath(), "BeastApp", "videos"),
+            Environment.GetEnvironmentVariable("LIVE_STREAM_URL") ?? "http://localhost:5050/",
+            GetDouble("LIVE_STREAM_FPS", 30.0, 1.0, 30.0),
             TimeSpan.FromSeconds(GetInt("CAPTURE_TIMEOUT_SECONDS", 5)));
     }
 

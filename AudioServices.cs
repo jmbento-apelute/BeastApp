@@ -78,16 +78,7 @@ internal sealed class AudioPlaybackService : IDisposable
     {
         try
         {
-            using var stream = new MemoryStream(CreateCameraCuePcm());
-            using var reader = new RawSourceWaveStream(stream, new WaveFormat(CueSampleRate, 16, 1));
-            using var output = new WaveOutEvent();
-            output.Init(reader);
-            output.Play();
-
-            while (output.PlaybackState == PlaybackState.Playing)
-            {
-                Thread.Sleep(10);
-            }
+            PlayPcmCue(CreateCameraCuePcm(), null);
         }
         catch
         {
@@ -95,22 +86,23 @@ internal sealed class AudioPlaybackService : IDisposable
         }
     }
 
+    public void PlayRecordingStartedCue()
+    {
+        try
+        {
+            PlayPcmCue(CreateRecordingStartedCuePcm(), null);
+        }
+        catch
+        {
+            // Recording feedback should never block video capture.
+        }
+    }
+
     public void PlayVoiceDetectedCue(AudioOutputDevice? outputDevice)
     {
         try
         {
-            using var stream = new MemoryStream(CreateVoiceDetectedCuePcm());
-            using var reader = new RawSourceWaveStream(stream, new WaveFormat(CueSampleRate, 16, 1));
-            using IWavePlayer output = outputDevice is { } selectedDevice
-                ? CreateWasapiOutput(selectedDevice)
-                : new WaveOutEvent();
-            output.Init(reader);
-            output.Play();
-
-            while (output.PlaybackState == PlaybackState.Playing)
-            {
-                Thread.Sleep(10);
-            }
+            PlayPcmCue(CreateVoiceDetectedCuePcm(), outputDevice);
         }
         catch
         {
@@ -164,6 +156,28 @@ internal sealed class AudioPlaybackService : IDisposable
         return bytes;
     }
 
+    private static byte[] CreateRecordingStartedCuePcm()
+    {
+        const double durationSeconds = 0.18;
+        var sampleCount = (int)(CueSampleRate * durationSeconds);
+        var bytes = new byte[sampleCount * sizeof(short)];
+
+        for (var i = 0; i < sampleCount; i++)
+        {
+            var t = i / (double)CueSampleRate;
+            var local = t / durationSeconds;
+            var envelope = Math.Sin(Math.PI * local);
+            var frequency = 650 + (local * 850);
+            var tone = Math.Sin(2 * Math.PI * frequency * t);
+            var sample = (short)(0.32 * envelope * tone * short.MaxValue);
+
+            bytes[i * 2] = (byte)(sample & 0xFF);
+            bytes[(i * 2) + 1] = (byte)((sample >> 8) & 0xFF);
+        }
+
+        return bytes;
+    }
+
     private static byte[] CreateVoiceDetectedCuePcm()
     {
         const double durationSeconds = 0.09;
@@ -183,6 +197,22 @@ internal sealed class AudioPlaybackService : IDisposable
         }
 
         return bytes;
+    }
+
+    private static void PlayPcmCue(byte[] pcmBytes, AudioOutputDevice? outputDevice)
+    {
+        using var stream = new MemoryStream(pcmBytes);
+        using var reader = new RawSourceWaveStream(stream, new WaveFormat(CueSampleRate, 16, 1));
+        using IWavePlayer output = outputDevice is { } selectedDevice
+            ? CreateWasapiOutput(selectedDevice)
+            : new WaveOutEvent();
+        output.Init(reader);
+        output.Play();
+
+        while (output.PlaybackState == PlaybackState.Playing)
+        {
+            Thread.Sleep(10);
+        }
     }
 
     private static IWavePlayer CreateWasapiOutput(AudioOutputDevice device)

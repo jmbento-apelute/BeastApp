@@ -11,7 +11,7 @@ using OpenCvSharp;
 var settings = AppSettings.Load(args);
 
 Console.WriteLine("Viture Beast Windows Assistant Prototype");
-Console.WriteLine("Press C to capture, S to switch source, Q to quit.");
+Console.WriteLine($"Press C to capture, V to record {settings.VideoCaptureDuration.TotalSeconds:0.#} seconds of video, L for live stream, S to switch source, Q to quit.");
 Console.WriteLine("Say \"Gafas, captura\" to capture hands-free.");
 Console.WriteLine();
 
@@ -36,9 +36,10 @@ var voiceInputGate = new object();
 SceneContext? lastSceneContext = null;
 DateTimeOffset voiceInputSuppressedUntil = DateTimeOffset.MinValue;
 
-IImageCaptureSource vitureSource = new VitureBeastCaptureSource(settings);
+ILiveFrameSource vitureSource = new VitureBeastCaptureSource(settings);
 using var webcamSource = new WebcamCaptureSource(settings.CameraIndex);
-IImageCaptureSource activeSource = vitureSource;
+ILiveFrameSource activeSource = vitureSource;
+using var liveStreamingServer = new LiveStreamingServer(settings);
 using var voiceCommandListener = new VoiceCommandListener(
     settings,
     transcriptionService,
@@ -68,7 +69,7 @@ else if (settings.VoiceCommandEnabled)
 
 while (true)
 {
-    IImageCaptureSource promptSource;
+    ILiveFrameSource promptSource;
     lock (sourceGate)
     {
         promptSource = activeSource;
@@ -80,11 +81,18 @@ while (true)
 
     if (key == ConsoleKey.Q)
     {
+        await liveStreamingServer.StopAsync();
         break;
     }
 
     if (key == ConsoleKey.S)
     {
+        if (liveStreamingServer.IsRunning)
+        {
+            Console.WriteLine("Stop live stream with L before switching source.");
+            continue;
+        }
+
         IImageCaptureSource selectedSource;
         lock (sourceGate)
         {
@@ -95,6 +103,18 @@ while (true)
 
         StartSourceWarmup(selectedSource);
 
+        continue;
+    }
+
+    if (key == ConsoleKey.L)
+    {
+        await ToggleLiveStreamAsync();
+        continue;
+    }
+
+    if (key == ConsoleKey.V)
+    {
+        await RunVideoCaptureWorkflowAsync();
         continue;
     }
 
@@ -183,8 +203,57 @@ DateTimeOffset GetVoiceInputSuppressedUntil()
     }
 }
 
+async Task ToggleLiveStreamAsync()
+{
+    if (liveStreamingServer.IsRunning)
+    {
+        await liveStreamingServer.StopAsync();
+        Console.WriteLine("Live stream stopped.");
+        audioPlayback.PlayCaptureCompleteCue();
+        return;
+    }
+
+    if (!await captureGate.WaitAsync(0))
+    {
+        Console.WriteLine("Another interaction is already in progress.");
+        return;
+    }
+
+    try
+    {
+        ILiveFrameSource requestedSource;
+        lock (sourceGate)
+        {
+            requestedSource = activeSource;
+        }
+
+        liveStreamingServer.Start(requestedSource);
+        audioPlayback.PlayRecordingStartedCue();
+        Console.WriteLine($"Live stream started from {requestedSource.Name}: {liveStreamingServer.Url}");
+        Console.WriteLine($"Open in Chrome: {liveStreamingServer.Url}");
+        Console.WriteLine("Press L again to stop live stream.");
+    }
+    catch (Exception ex)
+    {
+        Console.ForegroundColor = ConsoleColor.Red;
+        Console.WriteLine($"Live stream error: {ex.Message}");
+        Console.ResetColor();
+        await liveStreamingServer.StopAsync();
+    }
+    finally
+    {
+        captureGate.Release();
+    }
+}
+
 async Task RunCaptureWorkflowAsync(string trigger)
 {
+    if (liveStreamingServer.IsRunning)
+    {
+        Console.WriteLine("Stop live stream with L before capturing.");
+        return;
+    }
+
     if (!await captureGate.WaitAsync(0))
     {
         Console.WriteLine("Capture is already in progress.");
@@ -203,7 +272,7 @@ async Task RunCaptureWorkflowAsync(string trigger)
         var image = await CaptureWithFallbackAsync(requestedSource, vitureSource, webcamSource, settings.CaptureTimeout);
         lock (sourceGate)
         {
-            activeSource = image.Source;
+            activeSource = (ILiveFrameSource)image.Source;
         }
 
         audioPlayback.PlayCaptureCompleteCue();
@@ -312,6 +381,57 @@ async Task RunQuestionWorkflowAsync(string transcript)
     }
 }
 
+async Task RunVideoCaptureWorkflowAsync()
+{
+    if (liveStreamingServer.IsRunning)
+    {
+        Console.WriteLine("Stop live stream with L before recording video.");
+        return;
+    }
+
+    if (!await captureGate.WaitAsync(0))
+    {
+        Console.WriteLine("Another interaction is already in progress.");
+        return;
+    }
+
+    try
+    {
+        IVideoCaptureSource requestedSource;
+        lock (sourceGate)
+        {
+            requestedSource = activeSource;
+        }
+
+        Console.WriteLine($"Recording {settings.VideoCaptureDuration.TotalSeconds:0.#} seconds of video from {requestedSource.Name}...");
+        audioPlayback.PlayRecordingStartedCue();
+        var video = await CaptureVideoWithFallbackAsync(
+            requestedSource,
+            vitureSource,
+            webcamSource,
+            settings.VideoCaptureDuration,
+            settings.CaptureTimeout);
+
+        lock (sourceGate)
+        {
+            activeSource = (ILiveFrameSource)video.Source;
+        }
+
+        audioPlayback.PlayCaptureCompleteCue();
+        Console.WriteLine($"Video saved: {video.FilePath}");
+    }
+    catch (Exception ex)
+    {
+        Console.ForegroundColor = ConsoleColor.Red;
+        Console.WriteLine($"Error: {ex.Message}");
+        Console.ResetColor();
+    }
+    finally
+    {
+        captureGate.Release();
+    }
+}
+
 static ConsoleKey ReadCommandKey()
 {
     if (!Console.IsInputRedirected)
@@ -328,6 +448,8 @@ static ConsoleKey ReadCommandKey()
     return char.ToUpperInvariant((char)value) switch
     {
         'C' => ConsoleKey.C,
+        'V' => ConsoleKey.V,
+        'L' => ConsoleKey.L,
         'S' => ConsoleKey.S,
         'Q' => ConsoleKey.Q,
         _ => ConsoleKey.NoName
@@ -391,4 +513,37 @@ static async Task<CapturedImage> CaptureWithFallbackAsync(
         var jpeg = await webcamSource.CaptureJpegAsync(timeout, CancellationToken.None);
         return new CapturedImage(webcamSource, jpeg);
     }
+}
+
+async Task<CapturedVideo> CaptureVideoWithFallbackAsync(
+    IVideoCaptureSource requestedSource,
+    IVideoCaptureSource vitureSource,
+    IVideoCaptureSource webcamSource,
+    TimeSpan duration,
+    TimeSpan firstFrameTimeout)
+{
+    try
+    {
+        var outputPath = CreateVideoOutputPath(requestedSource);
+        await requestedSource.CaptureVideoAsync(duration, firstFrameTimeout, outputPath, CancellationToken.None);
+        return new CapturedVideo(requestedSource, outputPath, duration);
+    }
+    catch (Exception ex) when (ReferenceEquals(requestedSource, vitureSource))
+    {
+        Console.ForegroundColor = ConsoleColor.Yellow;
+        Console.WriteLine("Viture video capture failed. Falling back to webcam.");
+        Console.WriteLine($"Viture error: {ex.GetType().Name}: {ex.Message}");
+        Console.ResetColor();
+
+        var outputPath = CreateVideoOutputPath(webcamSource);
+        await webcamSource.CaptureVideoAsync(duration, firstFrameTimeout, outputPath, CancellationToken.None);
+        return new CapturedVideo(webcamSource, outputPath, duration);
+    }
+}
+
+string CreateVideoOutputPath(IImageCaptureSource source)
+{
+    var sourceName = SanitizeFileName(source.Name);
+    var fileName = $"{DateTimeOffset.Now:yyyyMMdd-HHmmss-fff}-{sourceName}.avi";
+    return Path.Combine(settings.VideoCaptureDirectory, fileName);
 }
