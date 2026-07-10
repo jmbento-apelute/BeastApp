@@ -1,6 +1,7 @@
 internal sealed class LiveStreamingServer(AppSettings settings) : IDisposable
 {
     private readonly SemaphoreSlim streamClientGate = new(1, 1);
+    private Func<LiveVideoEffect> getEffect = () => LiveVideoEffect.Normal;
     private System.Net.HttpListener? listener;
     private CancellationTokenSource? serverCts;
     private Task? serverTask;
@@ -10,7 +11,7 @@ internal sealed class LiveStreamingServer(AppSettings settings) : IDisposable
 
     public string Url => settings.LiveStreamUrl;
 
-    public void Start(ILiveFrameSource frameSource)
+    public void Start(ILiveFrameSource frameSource, Func<LiveVideoEffect> liveEffectProvider)
     {
         if (IsRunning)
         {
@@ -18,6 +19,7 @@ internal sealed class LiveStreamingServer(AppSettings settings) : IDisposable
         }
 
         source = frameSource;
+        getEffect = liveEffectProvider;
         serverCts = new CancellationTokenSource();
         listener = new System.Net.HttpListener();
         listener.Prefixes.Add(settings.LiveStreamUrl);
@@ -59,6 +61,7 @@ internal sealed class LiveStreamingServer(AppSettings settings) : IDisposable
         serverCts = null;
         serverTask = null;
         source = null;
+        getEffect = () => LiveVideoEffect.Normal;
     }
 
     public void Dispose()
@@ -116,6 +119,12 @@ internal sealed class LiveStreamingServer(AppSettings settings) : IDisposable
                 return;
             }
 
+            if (path.Equals("/effect.json", StringComparison.OrdinalIgnoreCase))
+            {
+                await WriteEffectJsonAsync(context).ConfigureAwait(false);
+                return;
+            }
+
             context.Response.StatusCode = 404;
         }
         catch (Exception ex)
@@ -165,16 +174,39 @@ internal sealed class LiveStreamingServer(AppSettings settings) : IDisposable
               <main>
                 <header>
                   <strong>Beast Live</strong>
-                  <small>{{System.Net.WebUtility.HtmlEncode(source?.Name ?? "Unknown source")}}</small>
+                  <small>{{System.Net.WebUtility.HtmlEncode(source?.Name ?? "Unknown source")}} - efecto: <span id="effect">{{System.Net.WebUtility.HtmlEncode(LiveVideoEffects.GetDisplayName(getEffect()))}}</span></small>
                 </header>
                 <img src="/stream.mjpeg" alt="Live camera stream">
               </main>
+              <script>
+                async function refreshEffect() {
+                  try {
+                    const response = await fetch('/effect.json', { cache: 'no-store' });
+                    if (!response.ok) return;
+                    const data = await response.json();
+                    document.getElementById('effect').textContent = data.name;
+                  } catch {
+                  }
+                }
+                setInterval(refreshEffect, 500);
+              </script>
             </body>
             </html>
             """;
 
         var bytes = Encoding.UTF8.GetBytes(html);
         context.Response.ContentType = "text/html; charset=utf-8";
+        context.Response.ContentLength64 = bytes.Length;
+        return context.Response.OutputStream.WriteAsync(bytes, 0, bytes.Length);
+    }
+
+    private Task WriteEffectJsonAsync(System.Net.HttpListenerContext context)
+    {
+        var effectName = LiveVideoEffects.GetDisplayName(getEffect());
+        var json = JsonSerializer.Serialize(new { name = effectName });
+        var bytes = Encoding.UTF8.GetBytes(json);
+        context.Response.ContentType = "application/json; charset=utf-8";
+        context.Response.Headers["Cache-Control"] = "no-store";
         context.Response.ContentLength64 = bytes.Length;
         return context.Response.OutputStream.WriteAsync(bytes, 0, bytes.Length);
     }
@@ -194,9 +226,10 @@ internal sealed class LiveStreamingServer(AppSettings settings) : IDisposable
             settings.LiveStreamFramesPerSecond,
             serverCancellationToken).ConfigureAwait(false))
         {
+            var outputBytes = LiveVideoEffects.ApplyToJpeg(jpegBytes, getEffect());
             context.Response.ContentType = "image/jpeg";
-            context.Response.ContentLength64 = jpegBytes.Length;
-            await context.Response.OutputStream.WriteAsync(jpegBytes, serverCancellationToken).ConfigureAwait(false);
+            context.Response.ContentLength64 = outputBytes.Length;
+            await context.Response.OutputStream.WriteAsync(outputBytes, serverCancellationToken).ConfigureAwait(false);
             return;
         }
     }
@@ -229,10 +262,11 @@ internal sealed class LiveStreamingServer(AppSettings settings) : IDisposable
                 settings.LiveStreamFramesPerSecond,
                 serverCancellationToken).ConfigureAwait(false))
             {
+                var outputBytes = LiveVideoEffects.ApplyToJpeg(jpegBytes, getEffect());
                 var header = Encoding.ASCII.GetBytes(
-                    $"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {jpegBytes.Length}\r\n\r\n");
+                    $"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {outputBytes.Length}\r\n\r\n");
                 await context.Response.OutputStream.WriteAsync(header, serverCancellationToken).ConfigureAwait(false);
-                await context.Response.OutputStream.WriteAsync(jpegBytes, serverCancellationToken).ConfigureAwait(false);
+                await context.Response.OutputStream.WriteAsync(outputBytes, serverCancellationToken).ConfigureAwait(false);
                 await context.Response.OutputStream.WriteAsync(Encoding.ASCII.GetBytes("\r\n"), serverCancellationToken).ConfigureAwait(false);
                 await context.Response.OutputStream.FlushAsync(serverCancellationToken).ConfigureAwait(false);
             }

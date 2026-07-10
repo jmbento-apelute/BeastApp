@@ -11,7 +11,7 @@ using OpenCvSharp;
 var settings = AppSettings.Load(args);
 
 Console.WriteLine("Viture Beast Windows Assistant Prototype");
-Console.WriteLine($"Press C to capture, V to record {settings.VideoCaptureDuration.TotalSeconds:0.#} seconds of video, L for live stream, S to switch source, Q to quit.");
+Console.WriteLine($"Press C to capture, V to record {settings.VideoCaptureDuration.TotalSeconds:0.#} seconds of video, L for live stream, E for live effect, S to switch source, Q to quit.");
 Console.WriteLine("Say \"Gafas, captura\" to capture hands-free.");
 Console.WriteLine();
 
@@ -33,8 +33,10 @@ using var captureGate = new SemaphoreSlim(1, 1);
 var sourceGate = new object();
 var sceneContextGate = new object();
 var voiceInputGate = new object();
+var liveEffectGate = new object();
 SceneContext? lastSceneContext = null;
 DateTimeOffset voiceInputSuppressedUntil = DateTimeOffset.MinValue;
+LiveVideoEffect activeLiveEffect = LiveVideoEffect.Normal;
 
 ILiveFrameSource vitureSource = new VitureBeastCaptureSource(settings);
 using var webcamSource = new WebcamCaptureSource(settings.CameraIndex);
@@ -109,6 +111,12 @@ while (true)
     if (key == ConsoleKey.L)
     {
         await ToggleLiveStreamAsync();
+        continue;
+    }
+
+    if (key == ConsoleKey.E)
+    {
+        RotateLiveEffect();
         continue;
     }
 
@@ -227,9 +235,10 @@ async Task ToggleLiveStreamAsync()
             requestedSource = activeSource;
         }
 
-        liveStreamingServer.Start(requestedSource);
+        liveStreamingServer.Start(requestedSource, GetActiveLiveEffect);
         audioPlayback.PlayRecordingStartedCue();
         Console.WriteLine($"Live stream started from {requestedSource.Name}: {liveStreamingServer.Url}");
+        Console.WriteLine($"Live effect: {LiveVideoEffects.GetDisplayName(GetActiveLiveEffect())}");
         Console.WriteLine($"Open in Chrome: {liveStreamingServer.Url}");
         Console.WriteLine("Press L again to stop live stream.");
     }
@@ -243,6 +252,27 @@ async Task ToggleLiveStreamAsync()
     finally
     {
         captureGate.Release();
+    }
+}
+
+void RotateLiveEffect()
+{
+    LiveVideoEffect nextEffect;
+    lock (liveEffectGate)
+    {
+        activeLiveEffect = LiveVideoEffects.Next(activeLiveEffect);
+        LiveVideoEffects.ResetTemporalState();
+        nextEffect = activeLiveEffect;
+    }
+
+    Console.WriteLine($"Live effect: {LiveVideoEffects.GetDisplayName(nextEffect)}");
+}
+
+LiveVideoEffect GetActiveLiveEffect()
+{
+    lock (liveEffectGate)
+    {
+        return activeLiveEffect;
     }
 }
 
@@ -450,6 +480,7 @@ static ConsoleKey ReadCommandKey()
         'C' => ConsoleKey.C,
         'V' => ConsoleKey.V,
         'L' => ConsoleKey.L,
+        'E' => ConsoleKey.E,
         'S' => ConsoleKey.S,
         'Q' => ConsoleKey.Q,
         _ => ConsoleKey.NoName
