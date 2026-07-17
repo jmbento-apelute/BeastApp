@@ -6,7 +6,7 @@ BeastApp is a prototype Windows assistant designed for Viture Beast glasses. It 
 
 - Capture from Viture Beast or a webcam, with automatic fallback to the webcam.
 - Brief scene descriptions in Spanish.
-- The `Gafas, captura` voice command and questions about the latest image.
+- Spanish-optimized transcription for the `Gafas, captura` voice command and questions about the latest image.
 - Speech synthesis and automatic audio device selection.
 - Video clip recording.
 - Local streaming with effects and gesture-based capture.
@@ -69,6 +69,8 @@ The wake phrase tolerates minor transcription losses, such as `gas captura`, but
 | `CAPTURE_TIMEOUT_SECONDS` | `5` | Timeout for the first frame |
 
 `Settings.cs` contains the remaining audio, voice, video, and streaming options.
+
+LLM instructions and internal context labels are written in English, while scene descriptions and spoken answers are requested in Spanish. Audio transcription explicitly uses Spanish (`language=es`).
 
 ## Code structure
 
