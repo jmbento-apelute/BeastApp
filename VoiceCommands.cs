@@ -352,7 +352,80 @@ internal static class VoiceCommandMatcher
         var normalizedTranscript = Normalize(transcript);
         var normalizedCommand = Normalize(commandPhrase);
 
-        return normalizedTranscript.Contains(normalizedCommand, StringComparison.OrdinalIgnoreCase);
+        if (normalizedTranscript.Contains(normalizedCommand, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var transcriptWords = normalizedTranscript.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var commandWords = normalizedCommand.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (commandWords.Length < 2 || transcriptWords.Length < commandWords.Length)
+        {
+            return false;
+        }
+
+        for (var start = 0; start <= transcriptWords.Length - commandWords.Length; start++)
+        {
+            if (!IsClippedWakeWord(transcriptWords[start], commandWords[0]))
+            {
+                continue;
+            }
+
+            var actionMatches = true;
+            for (var index = 1; index < commandWords.Length; index++)
+            {
+                if (!transcriptWords[start + index].Equals(commandWords[index], StringComparison.Ordinal))
+                {
+                    actionMatches = false;
+                    break;
+                }
+            }
+
+            if (actionMatches)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsClippedWakeWord(string heardWord, string expectedWord)
+    {
+        if (heardWord.Length < 3
+            || heardWord[0] != expectedWord[0]
+            || heardWord[^1] != expectedWord[^1])
+        {
+            return false;
+        }
+
+        return GetEditDistance(heardWord, expectedWord) <= 2;
+    }
+
+    private static int GetEditDistance(string left, string right)
+    {
+        var previous = new int[right.Length + 1];
+        var current = new int[right.Length + 1];
+        for (var column = 0; column <= right.Length; column++)
+        {
+            previous[column] = column;
+        }
+
+        for (var row = 1; row <= left.Length; row++)
+        {
+            current[0] = row;
+            for (var column = 1; column <= right.Length; column++)
+            {
+                var substitutionCost = left[row - 1] == right[column - 1] ? 0 : 1;
+                current[column] = Math.Min(
+                    Math.Min(current[column - 1] + 1, previous[column] + 1),
+                    previous[column - 1] + substitutionCost);
+            }
+
+            (previous, current) = (current, previous);
+        }
+
+        return previous[right.Length];
     }
 
     private static string Normalize(string value)

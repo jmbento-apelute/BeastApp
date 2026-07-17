@@ -100,14 +100,14 @@ internal sealed class OpenAiSceneAnalyzer(HttpClient httpClient, AppSettings set
 internal sealed class OpenAiQuestionAnswerer(HttpClient httpClient, AppSettings settings) : IDisposable
 {
     private const string QuestionPrompt = """
-        Eres un asistente breve para unas gafas inteligentes.
-        Si el texto del usuario es una pregunta o una peticion de informacion, responde en espanol natural.
-        Usa la imagen de la ultima escena capturada cuando la pregunta pueda referirse a objetos, texto, detalles visuales, posiciones, colores o riesgos.
-        Usa el analisis previo solo como resumen orientativo; si la pregunta pide un detalle concreto, revisa la imagen.
-        Si aparece una mano haciendo un gesto de pinza con pulgar e indice, ignoralo salvo que el usuario pregunte explicitamente por la mano o el gesto.
-        Si no hay contexto de escena y la pregunta depende de la vision, indica brevemente que primero necesitas una captura.
-        Si el texto no es una pregunta ni una peticion de informacion, responde exactamente: NO_QUESTION.
-        La respuesta debe ser util y lo bastante corta para escucharse en menos de quince segundos.
+        You are a concise assistant for smart glasses.
+        If the user's text is a question or a request for information, respond in natural Spanish.
+        Use the image from the latest captured scene when the question may refer to objects, text, visual details, positions, colors, or hazards.
+        Use the previous analysis only as a guiding summary; if the question asks for a specific detail, inspect the image.
+        If a hand appears making a pinch gesture with the thumb and index finger, ignore it unless the user explicitly asks about the hand or gesture.
+        If no scene context is available and the question depends on vision, briefly state in Spanish that a capture is needed first.
+        If the text is neither a question nor a request for information, respond with exactly: NO_QUESTION.
+        The response must be useful and short enough to be spoken aloud in under fifteen seconds.
         """;
 
     public async Task<string> AnswerIfQuestionAsync(
@@ -124,12 +124,12 @@ internal sealed class OpenAiQuestionAnswerer(HttpClient httpClient, AppSettings 
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", settings.OpenAiApiKey);
 
         var sceneContextText = sceneContext is null
-            ? "No hay una escena capturada todavia."
+            ? "No scene has been captured yet."
             : $"""
-                Ultima escena capturada:
-                - Fuente: {sceneContext.SourceName}
-                - Hora local: {sceneContext.CapturedAt:HH:mm:ss}
-                - Analisis: {sceneContext.Description}
+                Latest captured scene:
+                - Source: {sceneContext.SourceName}
+                - Local time: {sceneContext.CapturedAt:HH:mm:ss}
+                - Previous analysis: {sceneContext.Description}
                 """;
         var sceneContextContent = sceneContext is null
             ? new object[]
@@ -287,8 +287,9 @@ internal sealed class OpenAiTranscriptionService(HttpClient httpClient, AppSetti
         fileContent.Headers.ContentType = new MediaTypeHeaderValue("audio/wav");
         content.Add(fileContent, "file", "voice-command.wav");
         content.Add(new StringContent(settings.OpenAiTranscriptionModel), "model");
+        content.Add(new StringContent("es"), "language");
         content.Add(new StringContent("json"), "response_format");
-        content.Add(new StringContent("El usuario puede decir: \"Gafas, captura\"."), "prompt");
+        content.Add(new StringContent("The user may say the Spanish phrase: \"Gafas, captura\"."), "prompt");
         request.Content = content;
 
         using var response = await httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);

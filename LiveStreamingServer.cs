@@ -16,6 +16,23 @@ internal sealed class LiveStreamingServer(AppSettings settings) : IDisposable
 
     public string Url => settings.LiveStreamUrl;
 
+    public bool TryGetLatestFrame(out byte[] jpegBytes, out string sourceName)
+    {
+        lock (latestFrameGate)
+        {
+            if (latestJpegBytes is null)
+            {
+                jpegBytes = [];
+                sourceName = string.Empty;
+                return false;
+            }
+
+            jpegBytes = latestJpegBytes.ToArray();
+            sourceName = latestFrameSourceName;
+            return true;
+        }
+    }
+
     public void Start(
         ILiveFrameSource frameSource,
         Func<LiveVideoEffect> liveEffectProvider,
